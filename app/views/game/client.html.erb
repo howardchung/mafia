@@ -1,0 +1,226 @@
+<!DOCTYPE html>
+<html>
+
+    <head>
+        <meta charset="utf-8" />
+        <title>Mafia</title>
+
+        <!-- Mafia references -->
+        <script src="//code.jquery.com/jquery-2.1.1.min.js"></script>
+    </head>
+
+    <body>
+        <div data-win-control="WinJS.UI.ViewBox">
+            <div class="fixedlayout">
+                <div id="title" style="margin-top:10%">
+                    <h1>Mafia</h1>
+                </div>
+                <div id="startScreen" style="width:40%;margin:auto;height:10%">
+                    <input type="text" placeholder="Enter Name" id="playerName" />
+                    <input type="button" value="Join Game" id="enterLobby" />
+                </div>
+                <div id="gamecontainer"></div>
+                <div id="game" class="hide-div announcement"></div>
+            </div>
+        </div>
+    </body>
+    <script>
+        //polls server until mafia kills someone
+
+        function waitingNight() {
+            $("#game").html("Night Time");
+            $.getJSON(server + "/night", function(data) {
+                if(data["finished"]) {
+                    //display mafia victim
+                    victim = playerHash[data["victim"]];
+                    if(data["victim"] == myInfo["id"]) {
+                        $("#game").html("You have been killed.");
+                    } else {
+                        $("#game").html(victim + " was killed by the mafia!");
+                        $.getJSON(server + "/gameover", function(data) {
+                            setTimeout(function() {}, 3000);
+                            if(data) {
+                                //go to gameover screen, mafia won
+                                $("#game").append("<p>The mafia has won . . . there is only one peasant remaining.</p>");
+                            } else {
+                                setTimeout(function() {
+                                    //begin next day
+                                    $("#game").append("<p>The next day begins. . .</p>");
+                                    gameState();
+                                }, 3000);
+                            }
+                        });
+                    }
+                } else {
+                    //update table with results
+                    //display some kind of progress
+                    setTimeout(waitingNight, 1000);
+                }
+            })
+        };
+        //current server address
+        var server = "<%=@server%>";
+        //keeps current user's infomation (id and name)
+        var myInfo = {};
+        //tracks the role of a player
+        var role = "";
+        //maps player ids to names
+        var playerHash = {};
+        //stores current vote results
+        var votingresults = {};
+        $("#playerName").keydown(function(event) {
+            if(event.keyCode == 13) {
+                $("#enterLobby").trigger("click");
+            }
+        });
+        $("#enterLobby").click(function() {
+            //hide the start screen
+            $("#startScreen").hide();
+            displayLobby();
+        });
+        //displays player lobby before game start
+
+        function displayLobby() {
+            $("#title").hide();
+            $("#game").show();
+            //display list of players and start button
+            $("#game").html($("<input type='button' value='Start' id='startGame'/>"));
+            $("#startGame").click(function() {
+                //make call to server startgame
+                $.get(server + "/start");
+            });
+            //submit join request to server
+            $.getJSON(server + "/join", {
+                name: $("#playerName").val()
+            }, function(data) {
+                myInfo = data;
+                $("#game").append($("<p>Current Player List:</p>"));
+                waitingStart();
+            });
+        }
+        //generates voting table for either general vote or mafia vote
+        //mafia=table with only one column for mafia vote
+        //waiting=disables buttons
+
+        function makeVotingTable(mafia, waiting) {
+            $("#playerList").remove();
+            $.getJSON(server + "/players", function(data) {
+                var table = $("<table></table>").attr("id", "playerList");
+                for(i = 0; i < data.length; i++) {
+                    var row = $("<tr></tr>").attr("id", data[i]['id']);
+                    table.append(row);
+                    if(waiting || (myInfo["id"] == data[i]["id"])) {
+                        var playerName = $("<td></td>").text(data[i]["name"]);
+                        row.append(playerName);
+                    } else {
+                        var button = $("<button></button>").attr("class", "votebutton").attr("id", data[i]["id"]).text(data[i]["name"]);
+                        row.append(button);
+                    }
+                    if(!mafia) {
+                        var votedFor = $("<td></td>");
+                        //TODO add extra voting data
+                        if(votingresults[data[i]["id"]] != undefined) {
+                            votedFor.text("-->" + playerHash[votingresults[data[i]["id"]]]);
+                        }
+                        row.append(votedFor);
+                        //var votesAgainst = $("<td></td>").text("0");
+                        //row.append(votesAgainst);
+                    }
+                    table.append(row);
+                }
+                if(!mafia) {
+                    $('#game').append(table);
+                } else {
+                    $("#game").append("Select who you want to kill:<br>");
+                    $("#game").append(table);
+                }
+                $(".votebutton").click(function() {
+                    if(!mafia) {
+                        $.getJSON(server + "/vote", {
+                            voter: myInfo["id"],
+                            kill: $(this).attr("id")
+                        }); // vote during day
+                        waitingVote();
+                    } else {
+                        $.getJSON(server + "/mafia", {
+                            kill: $(this).attr("id")
+                        }); // kill vote if mafia
+                        waitingNight();
+                    }
+                });
+            });
+        }
+        //polls server for player list until game begins
+
+        function waitingStart() {
+            $.getJSON(server + "/begin", {
+                id: myInfo["id"]
+            }, function(data) {
+                role = data["result"];
+                if(role !== "waiting") {
+                    $.getJSON(server + "/playerhash", function(data) {
+                        playerHash = data;
+                    });
+                    gameState();
+                } else {
+                    makeVotingTable(false, true);
+                    setTimeout(waitingStart, 1000);
+                }
+            });
+        }
+        //generates the daytime voting table
+
+        function gameState() {
+            $("#game").html("<br>You are " + role + "<br> Vote for who you think is in the mafia!");
+            var d = new Date();
+            $.getJSON(server + "/roundend", function(data) {
+                $("#game").append("<br>Time Left: " + d.getSeconds() - data);
+            });
+            makeVotingTable(false, false); // not night
+        }
+        //polls server until vote is in
+
+        function waitingVote() {
+            $("#game").html("Waiting for player votes");
+            $.getJSON(server + "/results", function(data) {
+                votingresults = data["votes"];
+                if(data["finished"]) {
+                    //remove the player table
+                    $("#playerList").remove();
+                    //display vote result
+                    victim = playerHash[data["victim"]];
+                    if(data["victim"] == myInfo["id"]) {
+                        $("#game").html("<p>You have been killed.</p>");
+                    } else {
+                        if(data["victim"] == -1) {
+                            $("#game").html("<p>No one received a majority of votes.</p>");
+                        } else {
+                            $("#game").html(victim + " was executed by the peasants!");
+                        }
+                        $.getJSON(server + "/gameover", function(dataGameOver) {
+                            if(dataGameOver) {
+                                $("#game").append("<p>The peasants win!  The mafia was executed.</p>");
+                            } else {
+                                //go to night after 10 seconds
+                                $("#game").append("<p>PREPARE FOR NIGHT!</p>");
+                                setTimeout(function() {
+                                    if(role === "mafia") {
+                                        //this function doesnt block, players can stay on screen indefinitely
+                                        makeVotingTable(true, false); //generate mafia voting table
+                                    } else {
+                                        waitingNight();
+                                    }
+                                }, 3000);
+                            }
+                        });
+                    }
+                } else {
+                    //update table with results
+                    makeVotingTable(false, true);
+                    setTimeout(waitingVote, 1000);
+                }
+            });
+        }
+    </script>
+
+</html>
